@@ -14,41 +14,65 @@ st.set_page_config(page_title="지역별 연령별 인구구조", layout="wide")
 st.title("📊 지역별 연령별 인구구조 & 전국 유사 지역 분석")
 st.caption("행정안전부 주민등록 연령별 인구현황 CSV 기반")
 
-# 코드 파일과 같은 폴더에 위치한 데이터 파일명 (업로드한 원본 파일명 그대로)
+# 데이터 파일명 (업로드한 원본 파일명 그대로)
 DATA_FILENAME = "202606_202606_연령별인구현황_월간.csv"
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 이 스크립트가 저장소 루트(main.py 옆)가 아니라 `pages/` 하위 폴더에 있는
+# 멀티페이지 앱 구조일 수도 있으므로, 아래 후보 폴더들을 순서대로 찾아본다:
+#   1) 현재 작업 디렉터리 (Streamlit Cloud는 보통 저장소 루트에서 실행됨)
+#   2) 이 스크립트 파일이 있는 폴더
+#   3) 이 스크립트 파일 폴더의 상위 폴더 (예: pages/ 의 부모 = 저장소 루트)
+CANDIDATE_DIRS = list(
+    dict.fromkeys(
+        [
+            os.getcwd(),
+            SCRIPT_DIR,
+            os.path.dirname(SCRIPT_DIR),
+        ]
+    )
+)
 
 
-def find_data_file(directory: str, target_filename: str):
-    """데이터 파일을 찾는다.
+def find_data_file(candidate_dirs, target_filename: str):
+    """여러 후보 폴더를 돌면서 데이터 파일을 찾는다.
 
     한글 파일명은 macOS(NFD)와 Linux/GitHub(NFC)에서 유니코드 정규화 형태가 달라
     '눈에는 똑같은 파일명'인데도 os.path.exists()가 실패하는 경우가 흔하다.
-    그래서 (1) 정확히 일치, (2) 유니코드 정규화 후 일치, (3) 파일명에 핵심 키워드 포함,
-    순서로 폴백하며 찾는다.
+    그래서 각 후보 폴더마다 (1) 정확히 일치, (2) 유니코드 정규화 후 일치,
+    (3) 파일명에 핵심 키워드 포함, 순서로 폴백하며 찾는다.
     """
-    exact_path = os.path.join(directory, target_filename)
-    if os.path.exists(exact_path):
-        return exact_path, None
-
-    csv_files = glob.glob(os.path.join(directory, "*.csv"))
     target_norm = unicodedata.normalize("NFC", target_filename)
+    checked = []  # 진단용: [(폴더, 그 폴더의 csv 목록), ...]
 
-    # 유니코드 정규화 형태만 다른 동일 파일명
-    for f in csv_files:
-        if unicodedata.normalize("NFC", os.path.basename(f)) == target_norm:
-            return f, None
+    for directory in candidate_dirs:
+        if not directory or not os.path.isdir(directory):
+            continue
 
-    # 핵심 키워드가 포함된 csv (파일명이 조금 다르게 저장된 경우 대비)
-    for f in csv_files:
-        if "연령별인구현황" in unicodedata.normalize("NFC", os.path.basename(f)):
-            return f, None
+        exact_path = os.path.join(directory, target_filename)
+        if os.path.exists(exact_path):
+            return exact_path, checked
 
-    # 폴더에 csv가 이 파일 하나뿐이라면 그것을 사용
-    if len(csv_files) == 1:
-        return csv_files[0], None
+        csv_files = glob.glob(os.path.join(directory, "*.csv"))
 
-    return None, csv_files
+        # 유니코드 정규화 형태만 다른 동일 파일명
+        for f in csv_files:
+            if unicodedata.normalize("NFC", os.path.basename(f)) == target_norm:
+                return f, checked
+
+        # 핵심 키워드가 포함된 csv (파일명이 조금 다르게 저장된 경우 대비)
+        for f in csv_files:
+            if "연령별인구현황" in unicodedata.normalize("NFC", os.path.basename(f)):
+                return f, checked
+
+        # 그 폴더에 csv가 이 파일 하나뿐이라면 그것을 사용
+        if len(csv_files) == 1:
+            return csv_files[0], checked
+
+        checked.append((directory, csv_files))
+
+    return None, checked
 
 
 # ──────────────────────────────────────────────────────────────
@@ -162,27 +186,28 @@ def find_similar_regions(
 # ──────────────────────────────────────────────────────────────
 # 데이터 로드 (같은 폴더의 고정 파일 사용)
 # ──────────────────────────────────────────────────────────────
-DATA_PATH, csv_files_in_dir = find_data_file(APP_DIR, DATA_FILENAME)
+DATA_PATH, checked_dirs = find_data_file(CANDIDATE_DIRS, DATA_FILENAME)
 
 if DATA_PATH is None:
     st.error(
         f"데이터 파일을 찾을 수 없습니다.\n\n"
-        f"`main.py`와 같은 폴더에 `{DATA_FILENAME}` 파일이 있는지 확인해 주세요."
+        f"`{DATA_FILENAME}` 파일이 저장소 안에 있는지 확인해 주세요."
     )
-    with st.expander("🔍 진단 정보 (현재 폴더에서 실제로 찾은 파일 목록)"):
-        st.write(f"코드가 찾고 있는 폴더: `{APP_DIR}`")
-        try:
-            all_files = os.listdir(APP_DIR)
-        except Exception as e:
-            all_files = [f"(폴더 목록을 읽는 중 오류: {e})"]
-        st.write("이 폴더 안의 전체 파일 목록:")
-        st.code("\n".join(all_files) if all_files else "(파일 없음)")
-        if csv_files_in_dir:
-            st.write("이 중 .csv 파일:")
-            st.code("\n".join(csv_files_in_dir))
+    with st.expander("🔍 진단 정보 (실제로 확인한 폴더와 파일 목록)"):
+        for directory, csv_files in checked_dirs:
+            st.write(f"확인한 폴더: `{directory}`")
+            try:
+                all_files = os.listdir(directory)
+            except Exception as e:
+                all_files = [f"(폴더 목록을 읽는 중 오류: {e})"]
+            st.code("\n".join(all_files) if all_files else "(파일 없음)")
+            if csv_files:
+                st.caption("이 폴더의 .csv 파일: " + ", ".join(os.path.basename(f) for f in csv_files))
+            st.divider()
         st.caption(
-            "저장소(GitHub)에 CSV 파일이 main.py와 같은 폴더에 실제로 커밋되어 있는지, "
-            "또는 파일명에 오타나 공백 차이가 없는지 확인해 주세요."
+            "저장소(GitHub)에 CSV 파일이 실제로 커밋되어 있는지, "
+            "또는 파일명에 오타나 공백 차이가 없는지 확인해 주세요. "
+            "이 앱이 `pages/` 폴더 안의 스크립트라면, 저장소 루트에 CSV가 있어야 위 후보 폴더 중 하나에서 찾아집니다."
         )
     st.stop()
 
